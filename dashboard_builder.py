@@ -1,0 +1,363 @@
+"""
+Dashboard builder — generates a self-contained HTML dashboard.
+Page 1: Scanner results (card layout)
+Page 2: Single stock analyzer (live form via embedded logic)
+"""
+
+import json
+from pathlib import Path
+from datetime import datetime
+
+
+STATUS_COLOR = {"Ready": "#16a34a", "Prepare": "#d97706", "Avoid": "#dc2626"}
+STATUS_BG = {"Ready": "#dcfce7", "Prepare": "#fef3c7", "Avoid": "#fee2e2"}
+
+
+def _indicator_pill(label: str, value: str, ok: bool = True) -> str:
+    bg = "#dcfce7" if ok else "#fee2e2"
+    color = "#15803d" if ok else "#b91c1c"
+    return f'<span style="background:{bg};color:{color};padding:3px 8px;border-radius:20px;font-size:11px;font-weight:600;margin:2px;display:inline-block;">{label}: {value}</span>'
+
+
+def _setup_card(s: dict) -> str:
+    status = s["status"]
+    sc = STATUS_COLOR.get(status, "#6b7280")
+    sb = STATUS_BG.get(status, "#f3f4f6")
+    reasons_html = "".join(f'<li style="margin:2px 0">{r}</li>' for r in s["reasons"])
+    warnings_html = "".join(
+        f'<li style="margin:2px 0;color:#b45309;">⚠ {w}</li>' for w in s.get("warnings", [])
+    )
+    prob_pct = s["probability_upside"] * 100
+    prob_color = "#16a34a" if prob_pct >= 70 else "#d97706" if prob_pct >= 60 else "#dc2626"
+
+    return f"""
+    <div class="card" style="background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:20px;
+         box-shadow:0 2px 8px rgba(0,0,0,0.05);transition:transform .2s;position:relative;overflow:hidden;">
+      <div style="position:absolute;top:0;left:0;width:4px;height:100%;background:{sc};border-radius:14px 0 0 14px;"></div>
+      <div style="margin-left:8px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">
+          <div>
+            <div style="font-size:11px;color:#9ca3af;font-weight:600;letter-spacing:.5px;">NSE</div>
+            <div style="font-size:22px;font-weight:800;color:#111;">{s['ticker'].replace('.NS','')}</div>
+            <div style="font-size:16px;color:#374151;">₹{s['price']:.2f}</div>
+          </div>
+          <div style="text-align:right;">
+            <span style="background:{sb};color:{sc};padding:4px 10px;border-radius:20px;font-size:12px;font-weight:700;">{status.upper()}</span>
+            <div style="margin-top:8px;font-size:22px;font-weight:800;color:{prob_color};">{prob_pct:.0f}%</div>
+            <div style="font-size:10px;color:#9ca3af;">ML Upside Prob</div>
+          </div>
+        </div>
+
+        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px;">
+          {_indicator_pill("RSI-D", f"{s['rsi_daily']:.1f}", s['rsi_daily'] < 30)}
+          {_indicator_pill("RSI-W", f"{s['rsi_weekly']:.1f}", s['rsi_weekly'] < 30)}
+          {_indicator_pill("Vol", f"{s.get('vol_ratio',1):.1f}x", s.get('vol_confirmed', False))}
+          {_indicator_pill("MACD", "✓" if s.get('macd_confirmed') else "⚠", s.get('macd_confirmed', False))}
+          {_indicator_pill("RR", f"{s['rr']:.1f}x", s['rr'] >= 1.8)}
+        </div>
+
+        <table style="width:100%;font-size:13px;border-collapse:collapse;">
+          <tr>
+            <td style="color:#6b7280;padding:3px 0;">Entry</td>
+            <td style="font-weight:600;text-align:right;">₹{s['entry']:.2f}</td>
+            <td style="width:16px;"></td>
+            <td style="color:#6b7280;padding:3px 0;">Stop Loss</td>
+            <td style="font-weight:600;color:#dc2626;text-align:right;">₹{s['stop_loss']:.2f}</td>
+          </tr>
+          <tr>
+            <td style="color:#6b7280;padding:3px 0;">Target</td>
+            <td style="font-weight:600;color:#16a34a;text-align:right;">₹{s['target']:.2f}</td>
+            <td></td>
+            <td style="color:#6b7280;padding:3px 0;">Risk</td>
+            <td style="font-weight:600;text-align:right;">{s['risk_pct']:.1f}%</td>
+          </tr>
+        </table>
+
+        <div style="margin-top:12px;font-size:12px;color:#374151;">
+          <ul style="margin:0;padding-left:16px;">
+            {reasons_html}{warnings_html}
+          </ul>
+        </div>
+      </div>
+    </div>
+    """
+
+
+def build_dashboard(results: dict, output_path: Path = Path("dashboard.html")):
+    ts = datetime.now().strftime("%d %b %Y, %I:%M %p IST")
+
+    setups_html = "\n".join(_setup_card(s) for s in results.get("top_setups", []))
+    if not setups_html:
+        setups_html = '<div style="color:#9ca3af;text-align:center;padding:40px;grid-column:1/-1;">No qualifying setups today. Market may need more time to form a base.</div>'
+
+    watchlist_rows = ""
+    for s in results.get("watchlist", []):
+        watchlist_rows += f"""
+        <tr>
+          <td>{s['ticker'].replace('.NS','')}</td>
+          <td>₹{s['price']:.2f}</td>
+          <td>{s['rsi_daily']:.1f}</td>
+          <td>{s['rsi_weekly']:.1f}</td>
+          <td>{s['probability_upside']*100:.0f}%</td>
+          <td><span style="background:{STATUS_BG.get(s['status'],'#f3f4f6')};color:{STATUS_COLOR.get(s['status'],'#374151')};padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;">{s['status'].upper()}</span></td>
+        </tr>"""
+
+    follow_rows = ""
+    for t in results.get("follow_up", []):
+        ret = t.get("return_pct", 0)
+        color = "#16a34a" if ret >= 0 else "#dc2626"
+        closed = t.get("closed", "🔄 Active")
+        follow_rows += f"""
+        <tr>
+          <td>{t['ticker'].replace('.NS','')}</td>
+          <td>₹{t['entry']:.2f}</td>
+          <td>₹{t.get('current_price', t['entry']):.2f}</td>
+          <td style="color:{color};font-weight:700;">{"+" if ret >= 0 else ""}{ret:.1f}%</td>
+          <td>{t.get('days_held',0)}d</td>
+          <td>{closed}</td>
+        </tr>"""
+
+    results_json = json.dumps(results, default=str)
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Swing Trade Dashboard — Nifty 100</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;700;800&display=swap');
+  *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ font-family: 'DM Sans', sans-serif; background: #f1f5f9; color: #1e293b; min-height: 100vh; }}
+  
+  /* ── Sidebar ── */
+  .sidebar {{ position: fixed; top: 0; left: 0; width: 220px; height: 100vh; background: #0f172a;
+    padding: 24px 0; display: flex; flex-direction: column; z-index: 100; }}
+  .sidebar-logo {{ padding: 0 20px 24px; border-bottom: 1px solid #1e293b; }}
+  .sidebar-logo .brand {{ font-size: 13px; font-weight: 800; color: #38bdf8; letter-spacing: 1px; }}
+  .sidebar-logo .sub {{ font-size: 11px; color: #64748b; margin-top: 2px; }}
+  .nav {{ padding: 16px 0; flex: 1; }}
+  .nav-item {{ display: block; padding: 10px 20px; font-size: 13px; font-weight: 600; color: #94a3b8;
+    text-decoration: none; cursor: pointer; border-left: 3px solid transparent; transition: all .2s; }}
+  .nav-item:hover, .nav-item.active {{ color: #f0f9ff; background: #1e293b; border-left-color: #38bdf8; }}
+  .nav-item .icon {{ margin-right: 8px; }}
+  .sidebar-time {{ padding: 16px 20px; border-top: 1px solid #1e293b; font-size: 11px; color: #475569; font-family: 'DM Mono', monospace; }}
+
+  /* ── Main ── */
+  .main {{ margin-left: 220px; min-height: 100vh; }}
+  .topbar {{ background: #fff; padding: 16px 28px; border-bottom: 1px solid #e2e8f0;
+    display: flex; align-items: center; justify-content: space-between; }}
+  .topbar h1 {{ font-size: 18px; font-weight: 800; }}
+  .topbar .meta {{ font-size: 12px; color: #94a3b8; font-family: 'DM Mono', monospace; }}
+  .content {{ padding: 24px 28px; }}
+
+  /* ── Pages ── */
+  .page {{ display: none; }}
+  .page.active {{ display: block; }}
+
+  /* ── Cards grid ── */
+  .cards-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; margin-bottom: 24px; }}
+  .card:hover {{ transform: translateY(-2px); box-shadow: 0 6px 24px rgba(0,0,0,0.1) !important; }}
+
+  /* ── Section header ── */
+  .section-header {{ font-size: 14px; font-weight: 700; color: #475569; letter-spacing: .5px;
+    text-transform: uppercase; margin: 24px 0 12px; padding-bottom: 8px; border-bottom: 1px solid #e2e8f0; }}
+
+  /* ── Tables ── */
+  .data-table {{ width: 100%; border-collapse: collapse; background: #fff;
+    border-radius: 12px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,0.06); font-size: 13px; }}
+  .data-table th {{ background: #f8fafc; padding: 10px 14px; text-align: left;
+    font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: .5px; text-transform: uppercase; }}
+  .data-table td {{ padding: 10px 14px; border-top: 1px solid #f1f5f9; }}
+  .data-table tr:hover td {{ background: #f8fafc; }}
+
+  /* ── Insight box ── */
+  .insight-box {{ background: #eff6ff; border-left: 4px solid #3b82f6; padding: 16px 20px;
+    border-radius: 0 10px 10px 0; margin-bottom: 20px; font-size: 14px; line-height: 1.6; color: #1e40af; }}
+  .insight-box strong {{ display: block; margin-bottom: 6px; color: #1e3a8a; }}
+
+  /* ── Analyzer page ── */
+  .analyzer-form {{ background: #fff; border-radius: 14px; padding: 24px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06); margin-bottom: 24px; }}
+  .analyzer-form label {{ font-size: 12px; font-weight: 700; color: #64748b; display: block; margin-bottom: 6px; }}
+  .ticker-input {{ width: 100%; max-width: 320px; padding: 10px 14px; border: 1.5px solid #e2e8f0;
+    border-radius: 8px; font-size: 15px; font-family: 'DM Mono', monospace; font-weight: 600;
+    color: #0f172a; outline: none; transition: border .2s; }}
+  .ticker-input:focus {{ border-color: #38bdf8; }}
+  .analyze-btn {{ margin-left: 10px; padding: 10px 20px; background: #0f172a; color: #fff;
+    border: none; border-radius: 8px; font-size: 14px; font-weight: 700; cursor: pointer;
+    transition: background .2s; }}
+  .analyze-btn:hover {{ background: #1e40af; }}
+  .analyze-btn:disabled {{ opacity: .5; cursor: wait; }}
+  .result-box {{ background: #fff; border-radius: 14px; padding: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }}
+  .result-hidden {{ display: none; }}
+
+  /* ── Stat grid ── */
+  .stat-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; margin: 16px 0; }}
+  .stat-cell {{ background: #f8fafc; border-radius: 10px; padding: 12px; text-align: center; }}
+  .stat-cell .val {{ font-size: 20px; font-weight: 800; font-family: 'DM Mono', monospace; }}
+  .stat-cell .lbl {{ font-size: 10px; color: #94a3b8; text-transform: uppercase; margin-top: 2px; }}
+
+  /* ── Badge ── */
+  .badge {{ padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; display: inline-block; }}
+  .badge-ready {{ background: #dcfce7; color: #15803d; }}
+  .badge-prepare {{ background: #fef3c7; color: #b45309; }}
+  .badge-avoid {{ background: #fee2e2; color: #b91c1c; }}
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar {{ width: 6px; }} ::-webkit-scrollbar-track {{ background: #f1f5f9; }}
+  ::-webkit-scrollbar-thumb {{ background: #cbd5e1; border-radius: 3px; }}
+</style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<nav class="sidebar">
+  <div class="sidebar-logo">
+    <div class="brand">📈 SWING ALERT</div>
+    <div class="sub">Nifty 100 · Swing Trade</div>
+  </div>
+  <div class="nav">
+    <a class="nav-item active" onclick="showPage('scanner')"><span class="icon">🎯</span> Scanner</a>
+    <a class="nav-item" onclick="showPage('analyzer')"><span class="icon">🔍</span> Analyzer</a>
+    <a class="nav-item" onclick="showPage('tracker')"><span class="icon">📊</span> Tracker</a>
+  </div>
+  <div class="sidebar-time">Last run<br><span id="ts-display">{ts}</span></div>
+</nav>
+
+<!-- Main -->
+<div class="main">
+  <div class="topbar">
+    <h1 id="page-title">Scanner Results</h1>
+    <div class="meta">{ts}</div>
+  </div>
+
+  <div class="content">
+
+    <!-- ── PAGE 1: Scanner ── -->
+    <div id="page-scanner" class="page active">
+      <div class="insight-box">
+        <strong>💡 Market Context</strong>
+        {results.get('ai_insight','—')}
+      </div>
+
+      <div class="section-header">🎯 Top Trade Setups</div>
+      <div class="cards-grid">
+        {setups_html}
+      </div>
+
+      {'<div class="section-header">👁 Watchlist</div><table class="data-table"><thead><tr><th>Ticker</th><th>Price</th><th>RSI-D</th><th>RSI-W</th><th>ML %</th><th>Status</th></tr></thead><tbody>' + watchlist_rows + '</tbody></table>' if watchlist_rows else ''}
+    </div>
+
+    <!-- ── PAGE 2: Analyzer ── -->
+    <div id="page-analyzer" class="page">
+      <div class="analyzer-form">
+        <label>Enter NSE ticker (e.g. RELIANCE or RELIANCE.NS or AAPL)</label>
+        <div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;">
+          <input class="ticker-input" id="ticker-input" type="text" placeholder="RELIANCE.NS" maxlength="20">
+          <button class="analyze-btn" id="analyze-btn" onclick="analyzeStock()">Analyze</button>
+        </div>
+        <div id="analyze-error" style="color:#dc2626;font-size:13px;margin-top:8px;"></div>
+      </div>
+
+      <div class="result-box result-hidden" id="analyzer-result">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+          <div>
+            <div style="font-size:11px;color:#94a3b8;font-weight:600;">ANALYSIS RESULT</div>
+            <h2 id="res-ticker" style="font-size:26px;font-weight:800;margin:2px 0;"></h2>
+            <span id="res-price" style="font-size:18px;color:#475569;"></span>
+          </div>
+          <span id="res-badge" class="badge"></span>
+        </div>
+
+        <div class="stat-grid">
+          <div class="stat-cell"><div class="val" id="res-rsi-d">—</div><div class="lbl">RSI Daily</div></div>
+          <div class="stat-cell"><div class="val" id="res-rsi-w">—</div><div class="lbl">RSI Weekly</div></div>
+          <div class="stat-cell"><div class="val" id="res-vol">—</div><div class="lbl">Vol Ratio</div></div>
+          <div class="stat-cell"><div class="val" id="res-prob">—</div><div class="lbl">ML Upside%</div></div>
+          <div class="stat-cell"><div class="val" id="res-entry">—</div><div class="lbl">Entry</div></div>
+          <div class="stat-cell"><div class="val" id="res-sl">—</div><div class="lbl">Stop Loss</div></div>
+          <div class="stat-cell"><div class="val" id="res-target">—</div><div class="lbl">Target</div></div>
+          <div class="stat-cell"><div class="val" id="res-rr">—</div><div class="lbl">Risk/Reward</div></div>
+        </div>
+
+        <div id="res-reasons" style="font-size:13px;color:#475569;line-height:1.7;"></div>
+      </div>
+    </div>
+
+    <!-- ── PAGE 3: Tracker ── -->
+    <div id="page-tracker" class="page">
+      <div class="section-header">📊 Follow-Up Tracker</div>
+      {'<table class="data-table"><thead><tr><th>Ticker</th><th>Entry</th><th>Current</th><th>Return</th><th>Days</th><th>Status</th></tr></thead><tbody>' + follow_rows + '</tbody></table>' if follow_rows else '<div style="color:#94a3b8;padding:40px;text-align:center;">No active trades being tracked.</div>'}
+    </div>
+
+  </div><!-- /content -->
+</div><!-- /main -->
+
+<script>
+const SCAN_DATA = {results_json};
+
+function showPage(name) {{
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('page-' + name).classList.add('active');
+  event.currentTarget.classList.add('active');
+  const titles = {{ scanner:'Scanner Results', analyzer:'Stock Analyzer', tracker:'Follow-Up Tracker' }};
+  document.getElementById('page-title').textContent = titles[name];
+}}
+
+function analyzeStock() {{
+  const ticker = document.getElementById('ticker-input').value.trim().toUpperCase();
+  if (!ticker) return;
+  const errEl = document.getElementById('analyze-error');
+  errEl.textContent = '';
+
+  // Check if in scan results first
+  const all = [...(SCAN_DATA.top_setups || []), ...(SCAN_DATA.watchlist || [])];
+  const ns = ticker.endsWith('.NS') ? ticker : ticker + '.NS';
+  const found = all.find(s => s.ticker === ns || s.ticker === ticker);
+
+  if (found) {{
+    renderResult(found);
+  }} else {{
+    errEl.textContent = 'Ticker not in today\\'s scan. Run main.py to get full analysis, or check spelling.';
+  }}
+}}
+
+function renderResult(s) {{
+  document.getElementById('analyzer-result').classList.remove('result-hidden');
+  document.getElementById('res-ticker').textContent = s.ticker.replace('.NS','');
+  document.getElementById('res-price').textContent = '₹' + s.price.toFixed(2);
+  document.getElementById('res-rsi-d').textContent = s.rsi_daily.toFixed(1);
+  document.getElementById('res-rsi-w').textContent = s.rsi_weekly.toFixed(1);
+  document.getElementById('res-vol').textContent = (s.vol_ratio||1).toFixed(1) + 'x';
+  document.getElementById('res-prob').textContent = (s.probability_upside*100).toFixed(0) + '%';
+  document.getElementById('res-entry').textContent = '₹' + (s.entry||s.price).toFixed(2);
+  document.getElementById('res-sl').textContent = '₹' + (s.stop_loss||0).toFixed(2);
+  document.getElementById('res-target').textContent = '₹' + (s.target||0).toFixed(2);
+  document.getElementById('res-rr').textContent = (s.rr||0).toFixed(1) + 'x';
+
+  const badge = document.getElementById('res-badge');
+  badge.textContent = s.status.toUpperCase();
+  badge.className = 'badge badge-' + s.status.toLowerCase();
+
+  const reasons = (s.reasons||[]).map(r => `<li>${{r}}</li>`).join('');
+  const warnings = (s.warnings||[]).map(w => `<li style="color:#b45309">⚠ ${{w}}</li>`).join('');
+  document.getElementById('res-reasons').innerHTML = '<ul style="padding-left:16px;margin-top:8px;">' + reasons + warnings + '</ul>';
+}}
+
+// Allow Enter key to trigger analysis
+document.getElementById('ticker-input').addEventListener('keydown', e => {{
+  if (e.key === 'Enter') analyzeStock();
+}});
+</script>
+</body>
+</html>"""
+
+    output_path.write_text(html)
+    log.info(f"Dashboard saved to {output_path}")
+    return output_path
+
+
+import logging
+log = logging.getLogger(__name__)
