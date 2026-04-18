@@ -231,7 +231,7 @@ def generate_signal(ind: dict) -> dict:
         return {"pass": False, "status": "Avoid", "reasons": ["Fresh breakdown below 10-day low"]}
 
     # ── Determine status ──
-    if macd_confirmed and vol_confirmed:
+    if macd_confirmed:
         status = "Ready"
     else:
         status = "Prepare"
@@ -254,7 +254,12 @@ def build_trade_setup(ind: dict, signal: dict) -> dict:
     """Compute entry, stop loss, target, and RR ratio."""
     price = ind["price"]
     entry = ind["prev_high"]  # breakout level
-
+    
+    if ind["price"] > entry:
+        status = "Ready"
+    else:
+        status = "Prepare"
+    
     # Stop loss: max of swing low or fixed 5% below current
     sl_swing = ind["swing_low"]
     sl_fixed = price * 0.95
@@ -265,7 +270,7 @@ def build_trade_setup(ind: dict, signal: dict) -> dict:
     target_pref = price * 1.10
 
     # Risk/Reward
-    risk = price - stop_loss
+    risk = entry - stop_loss
     reward = target_pref - entry
     rr = reward / risk if risk > 0 else 0
 
@@ -471,7 +476,7 @@ def run_scanner() -> dict:
             continue
 
         prob = ml_probability(ind)
-        if prob < 0.6:
+        if prob < 0.55:
             log.info(f"  [{ticker}] ML prob too low ({prob:.2f}), skipping")
             continue
 
